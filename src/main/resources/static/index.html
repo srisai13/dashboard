@@ -5,7 +5,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Block Node Dashboard</title>
-    <link rel="stylesheet" href="css/index.css">
+    <link rel="stylesheet" href="css/index.css?v=3">
 </head>
 
 <body>
@@ -15,8 +15,7 @@
 
     <div class="container">
         <h1 style="text-align: center; margin-bottom: 5px;">Block Node Dashboard - OLT & GP</h1>
-        <div id="reportDate" style="text-align: center; color: #666; margin-bottom: 5px;">Report Date: Initializing...</div>
-        <div id="lastSyncTime" style="text-align: center; color: #888; font-size: 0.85rem; margin-bottom: 25px;">Last Sync: Never</div>
+        <div id="reportDate" style="text-align: center; color: #666; margin-bottom: 25px;">Report Date: Initializing...</div>
 
         <div class="stats">
             <div class="stat-card" id="totalCard">
@@ -66,16 +65,13 @@
                 <tbody id="tbody"></tbody>
             </table>
         </div>
+
+        <!-- Pagination -->
+        <div id="pagination" class="pagination" style="display:none;"></div>
     </div>
 
-    <!-- Premium Sync Notification Pop-up -->
-    <div id="syncPopup" class="sync-popup">
-        <div class="sync-spinner"></div>
-        <div class="sync-info">
-            <div class="sync-title">Syncing with Fiberify API...</div>
-            <div id="syncMsg" class="sync-msg">Initializing connection...</div>
-        </div>
-    </div>
+
+
 
     <div id="previewModal" class="modal">
         <div class="modal-content">
@@ -90,7 +86,7 @@
         </div>
     </div>
 
-    <script src="js/app.js"></script>
+    <script src="js/app.js?v=3"></script>
 </body>
 
 </html>

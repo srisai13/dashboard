@@ -25,6 +25,16 @@ public class DashboardApiController {
         Map<String, Object> response = new HashMap<>();
         response.put("date", service.getReportDate());
         response.put("data", service.getCurrentData());
+        response.put("loading", !service.isInitialLoadComplete());
+        return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/status")
+    public ResponseEntity<Map<String, Object>> getStatus() {
+        Map<String, Object> response = new HashMap<>();
+        response.put("ready", service.isInitialLoadComplete());
+        response.put("syncRunning", service.isSyncRunning());
+        response.put("syncProgress", service.getSyncProgress());
         return ResponseEntity.ok(response);
     }
 

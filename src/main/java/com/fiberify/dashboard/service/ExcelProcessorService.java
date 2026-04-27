@@ -9,6 +9,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.*;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
@@ -37,14 +38,23 @@ public class ExcelProcessorService {
     private List<BlockNode> cachedData = new ArrayList<>();
 
     private List<Map<String, Object>> latestIncidents = new ArrayList<>();
-    private String reportDate = "Initializing...";
+    private String reportDate = "Loading...";
     private volatile String syncProgress = "Idle";
     private volatile boolean stopSync = false;
     private volatile boolean isSyncRunning = false;
+    private volatile boolean initialLoadComplete = false;
 
     @PostConstruct
     public void init() {
-        processLatestFiles();
+        Thread loader = new Thread(() -> {
+            log.info("Background init: loading base Excel data...");
+            long start = System.currentTimeMillis();
+            processLatestFiles();
+            initialLoadComplete = true;
+            log.info("Background init complete in {}ms", System.currentTimeMillis() - start);
+        }, "data-loader");
+        loader.setDaemon(true);
+        loader.start();
     }
 
     // --- Getters and Status ---
@@ -69,6 +79,10 @@ public class ExcelProcessorService {
         return isSyncRunning;
     }
 
+    public boolean isInitialLoadComplete() {
+        return initialLoadComplete;
+    }
+
     public void stopSync() {
         this.stopSync = true;
     }
@@ -90,8 +104,8 @@ public class ExcelProcessorService {
                 parseAndPersistOltFile(latestOlt, new HashMap<>(), new HashMap<>(), new HashMap<>());
             }
             // Ensure the report date reflects the file source if no live sync happened yet
-            if (reportDate == null || !reportDate.contains("(Live)")) {
-                this.reportDate = LocalDate.now().format(DATE_FORMATTER) + " (Report File)";
+            if (reportDate == null || reportDate.equals("Loading...")) {
+                this.reportDate = LocalDate.now().format(DATE_FORMATTER);
             }
         } catch (Exception e) {
             reportDate = "Error loading base data";
@@ -107,7 +121,10 @@ public class ExcelProcessorService {
         syncProgress = "Fetching Live Data...";
         
         try {
-            RestTemplate restTemplate = new RestTemplate();
+            SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+            factory.setConnectTimeout(30000);
+            factory.setReadTimeout(60000);
+            RestTemplate restTemplate = new RestTemplate(factory);
             HttpHeaders headers = new HttpHeaders();
             headers.set("Authorization", LIVE_TOKEN);
             HttpEntity<String> entity = new HttpEntity<>(headers);
@@ -138,7 +155,7 @@ public class ExcelProcessorService {
             processIncidentsAndRefresh(allIncidents);
             
             syncProgress = stopSync ? "Stopped" : "Completed";
-            reportDate = LocalDateTime.now().format(TIME_FORMATTER) + " (Live)";
+            reportDate = LocalDate.now().format(DATE_FORMATTER);
             
         } catch (Exception e) {
             syncProgress = "Error: " + e.getMessage();
