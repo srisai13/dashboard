@@ -1,0 +1,16 @@
+target/
+*.class
+*.jar
+*.war
+*.ear
+.project
+.classpath
+.settings/
+.idea/
+*.iml
+.vscode/
+bin/
+apache-maven-*/
+*.bat
+*.log
+.DS_Store
