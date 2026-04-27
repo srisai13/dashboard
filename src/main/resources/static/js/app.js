@@ -131,7 +131,7 @@ function closePreview() {
     document.getElementById('previewModal').style.display = 'none';
 }
 
-async function syncLiveApi() {
+async function syncLiveApi(isManual = true) {
     const btn = document.getElementById('refreshBtn');
     if (btn) {
         btn.disabled = true;
@@ -142,7 +142,7 @@ async function syncLiveApi() {
     
     try {
         await fetch('/api/sync-live', { method: 'POST' });
-        pollSync();
+        pollSync(isManual);
     } catch (e) {
         if (btn) {
             btn.disabled = false;
@@ -152,7 +152,7 @@ async function syncLiveApi() {
     }
 }
 
-async function pollSync() {
+async function pollSync(isManual = true) {
     const res = await fetch('/api/sync-status');
     const data = await res.json();
     if (data.status === "Completed" || data.status === "Stopped") {
@@ -164,14 +164,23 @@ async function pollSync() {
         const loadingEl = document.getElementById('loading');
         if (loadingEl) loadingEl.style.display = 'none';
         fetchData();
-        setTimeout(() => { alert("Data Refreshed Successfully!"); }, 500);
+        if (isManual) {
+            setTimeout(() => { alert("Data Refreshed Successfully!"); }, 500);
+        }
     } else {
-        setTimeout(pollSync, 2000);
+        setTimeout(() => pollSync(isManual), 2000);
     }
 }
 
 document.addEventListener('DOMContentLoaded', () => {
     fetchData();
+    
+    // Set up auto-refresh every 2 minutes (120,000 ms)
+    setInterval(() => {
+        console.log("Auto-refreshing data...");
+        syncLiveApi(false);
+    }, 120000);
+
     const distFilter = document.getElementById('distFilter');
     if (distFilter) distFilter.onchange = (e) => { currentDist = e.target.value; render(); };
     const searchInput = document.getElementById('search');
