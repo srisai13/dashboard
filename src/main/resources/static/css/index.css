@@ -70,7 +70,6 @@ h1 {
 
 #search {
     flex-grow: 1;
-    max-width: 500px; /* Limit width on large screens */
     padding: 10px;
     border: 1px solid #000; /* Black border */
     border-radius: 4px;
@@ -412,7 +411,7 @@ th:nth-child(8), td:nth-child(8) { width: 60px; }
     justify-content: space-between;
     padding: 8px 16px;
     margin-top: 0;
-    background: #f5f5f5;
+    background: #fff;
     border-top: 1px solid #ddd;
     flex-wrap: wrap;
     gap: 12px;
