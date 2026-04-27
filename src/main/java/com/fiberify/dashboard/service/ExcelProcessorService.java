@@ -192,6 +192,8 @@ public class ExcelProcessorService {
         File latestOlt = getLatestOltFile();
         if (latestOlt != null) {
             parseAndPersistOltFile(latestOlt, idToStatus, idToAlarm, idToTime);
+        } else {
+            log.warn("No base OLT file found in dashboard_files/. Cannot populate dashboard grid.");
         }
     }
 
