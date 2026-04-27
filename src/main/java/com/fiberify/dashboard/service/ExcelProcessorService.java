@@ -296,7 +296,7 @@ public class ExcelProcessorService {
             int distCol = findCol(hdr, "DISTRICT");
             int nameCol = findCol(hdr, "BLOCK NODE NAME");
             int ipCol = findCol(hdr, "BLOCK NODE IP");
-            int codeCol = findCol(hdr, "BLOCK CODE", "BLOCK NODE LOCATION CODE");
+            int codeCol = findCol(hdr, "BLOCK CODE", "BLOCK NODE LOCATION CODE", "LOCATION CODE", "NODE CODE", "CODE");
             int gpBlockCol = findCol(hdr, "GP BLOCK");
             int gpLocCol = findCol(hdr, "GP LOCATION");
             int gpCodeCol = findCol(hdr, "GP LOCATION CODE");

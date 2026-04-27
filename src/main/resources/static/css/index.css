@@ -6,11 +6,12 @@ body {
 }
 
 .container {
-    max-width: 98%;
-    margin: 0 auto;
+    max-width: 1250px;
+    margin: 20px auto;
     background: #fff;
     padding: 20px;
     border-radius: 8px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.05);
 }
 
 h1 {
@@ -69,6 +70,7 @@ h1 {
 
 #search {
     flex-grow: 1;
+    max-width: 500px; /* Limit width on large screens */
     padding: 10px;
     border: 1px solid #000; /* Black border */
     border-radius: 4px;
