@@ -6,13 +6,25 @@ let currentDist = '';
 function fetchData() {
     const loadingEl = document.getElementById('loading');
     if (loadingEl) loadingEl.style.display = 'block';
-    fetch('/api/nodes')
+    
+    // Add cache buster to prevent stale data
+    fetch('/api/nodes?t=' + Date.now())
         .then(res => res.json())
         .then(json => {
             if (loadingEl) loadingEl.style.display = 'none';
             DATA = json.data;
+            
             const reportDateEl = document.getElementById('reportDate');
-            if (reportDateEl) reportDateEl.textContent = "Report Date:" + (json.date || "N/A");
+            if (reportDateEl) {
+                reportDateEl.textContent = "Report Date: " + (json.date || "N/A");
+            }
+            
+            // Update the last sync time display
+            const lastSyncEl = document.getElementById('lastSyncTime');
+            if (lastSyncEl) {
+                lastSyncEl.textContent = "Last Sync: " + new Date().toLocaleTimeString();
+            }
+            
             populateDistricts();
             render();
         });
@@ -133,17 +145,33 @@ function closePreview() {
 
 async function syncLiveApi(isManual = true) {
     const btn = document.getElementById('refreshBtn');
-    if (btn) {
+    if (btn && isManual) {
         btn.disabled = true;
         btn.textContent = "Refreshing...";
     }
     const loadingEl = document.getElementById('loading');
-    if (loadingEl) loadingEl.style.display = 'block';
+    if (loadingEl && isManual) loadingEl.style.display = 'block';
     
     try {
-        await fetch('/api/sync-live', { method: 'POST' });
+        console.log("Starting sync... Manual:", isManual);
+        const res = await fetch('/api/sync-live', { method: 'POST' });
+        
+        const popup = document.getElementById('syncPopup');
+        const msg = document.getElementById('syncMsg');
+        
+        if (res.status === 400 && isManual) {
+            const json = await res.json();
+            if (popup && msg) {
+                popup.classList.add('active');
+                msg.textContent = json.message || "Sync already running";
+                setTimeout(() => popup.classList.remove('active'), 3000);
+            }
+        } else if (popup && isManual) {
+            popup.classList.add('active');
+        }
         pollSync(isManual);
     } catch (e) {
+        console.error("Sync failed:", e);
         if (btn) {
             btn.disabled = false;
             btn.textContent = "Refresh";
@@ -153,22 +181,40 @@ async function syncLiveApi(isManual = true) {
 }
 
 async function pollSync(isManual = true) {
-    const res = await fetch('/api/sync-status');
-    const data = await res.json();
-    if (data.status === "Completed" || data.status === "Stopped") {
-        const btn = document.getElementById('refreshBtn');
-        if (btn) {
-            btn.disabled = false;
-            btn.textContent = "Refresh";
+    try {
+        const res = await fetch('/api/sync-status?t=' + Date.now());
+        const data = await res.json();
+        console.log("Sync Status:", data.status);
+        
+        const popup = document.getElementById('syncPopup');
+        const msg = document.getElementById('syncMsg');
+        
+        if (popup && msg && isManual) {
+            if (data.status !== "Idle" && data.status !== "Completed" && data.status !== "Stopped") {
+                popup.classList.add('active');
+                msg.textContent = data.status;
+            }
         }
-        const loadingEl = document.getElementById('loading');
-        if (loadingEl) loadingEl.style.display = 'none';
-        fetchData();
-        if (isManual) {
-            setTimeout(() => { alert("Data Refreshed Successfully!"); }, 500);
+        
+        if (data.status === "Completed" || data.status === "Stopped" || data.status === "Idle") {
+            const btn = document.getElementById('refreshBtn');
+            if (btn && isManual) {
+                btn.disabled = false;
+                btn.textContent = "Refresh";
+            }
+            const loadingEl = document.getElementById('loading');
+            if (loadingEl && isManual) loadingEl.style.display = 'none';
+            if (popup) popup.classList.remove('active'); // Hide pop-up when done
+            fetchData();
+            if (isManual) {
+                setTimeout(() => { alert("Data Refreshed Successfully!"); }, 500);
+            }
+        } else {
+            setTimeout(() => pollSync(isManual), 2000);
         }
-    } else {
-        setTimeout(() => pollSync(isManual), 2000);
+    } catch (e) {
+        console.error("Poll failed:", e);
+        setTimeout(() => pollSync(isManual), 5000); // Retry later
     }
 }
 
@@ -177,7 +223,8 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Set up auto-refresh every 2 minutes (120,000 ms)
     setInterval(() => {
-        console.log("Auto-refreshing data...");
+        const now = new Date().toLocaleTimeString();
+        console.log("[" + now + "] Auto-refreshing data...");
         syncLiveApi(false);
     }, 120000);
 

@@ -13,6 +13,7 @@ public class BlockNode {
     private String alarm = "--";
     private String stateChange = "--";
     private int gpCount;
+
     private List<GpEntry> gps = new ArrayList<>();
 
     public BlockNode() {}

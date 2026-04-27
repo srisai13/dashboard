@@ -108,6 +108,65 @@ h1 {
     margin-left: auto;
 }
 
+/* --- Sync Pop-up Notification --- */
+.sync-popup {
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    background: rgba(255, 255, 255, 0.9);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(0, 123, 255, 0.3);
+    border-radius: 12px;
+    padding: 15px 25px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+    display: none;
+    align-items: center;
+    gap: 15px;
+    z-index: 10000;
+    animation: slideIn 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+    min-width: 280px;
+}
+
+.sync-popup.active {
+    display: flex;
+}
+
+.sync-spinner {
+    width: 24px;
+    height: 24px;
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #007bff;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+.sync-info {
+    display: flex;
+    flex-direction: column;
+}
+
+.sync-title {
+    font-size: 14px;
+    font-weight: 700;
+    color: #333;
+    margin-bottom: 2px;
+}
+
+.sync-msg {
+    font-size: 12px;
+    color: #666;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+@keyframes slideIn {
+    from { transform: translateX(100%) scale(0.8); opacity: 0; }
+    to { transform: translateX(0) scale(1); opacity: 1; }
+}
+
 .card {
     border: 1px solid #000; /* Black border */
     border-radius: 4px;

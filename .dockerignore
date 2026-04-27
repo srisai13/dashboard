@@ -1,0 +1,8 @@
+target/
+*.log
+.git/
+.vscode/
+apache-maven-3.9.6/
+dashboard_files/
+.gitignore
+run.bat

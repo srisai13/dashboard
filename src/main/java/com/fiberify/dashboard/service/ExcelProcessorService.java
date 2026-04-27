@@ -3,9 +3,11 @@ package com.fiberify.dashboard.service;
 import com.fiberify.dashboard.model.BlockNode;
 import com.fiberify.dashboard.model.GpEntry;
 import jakarta.annotation.PostConstruct;
-import lombok.extern.slf4j.Slf4j;
 import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
@@ -21,18 +23,19 @@ import java.util.regex.Pattern;
 
 /**
  * Service responsible for processing Excel data and synchronizing with live APIs.
- * Handles network incident detection and dashboard data mapping.
+ * Uses in-memory caching for dashboard data.
  */
-@Slf4j
 @Service
 public class ExcelProcessorService {
 
+    private static final Logger log = LoggerFactory.getLogger(ExcelProcessorService.class);
     private static final String DASHBOARD_FILES_DIR = "dashboard_files";
     private static final String LIVE_TOKEN = "Bearer eyJhbGciOiJIUzUxMiJ9.eyJzdWIiOiJmaWJlcmlmeWluYyIsImF1dGgiOiJST0xFX0JBLFJPTEVfT0EsUk9MRV9QTEFOX0FETUlOLFJPTEVfUk9MTE9VVF9BRE1JTixST0xFX1JPTExPVVRfTUFOQUdFUixST0xFX1VTRVJfQURNSU4iLCJleHAiOjE3Nzg5MTExNjl9.8jWc2hshIU-6y4wFwUH5LTjuzLhIE3ThuNkUDV2fLCR6rz1ZiWTWg_bqRedzBK0m8CfLjCJlfGTvskUraVrl8A";
     private static final DateTimeFormatter DATE_FORMATTER = DateTimeFormatter.ofPattern("dd-MM-yyyy");
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("dd-MM-yyyy HH:mm:ss");
 
-    private List<BlockNode> currentData = new ArrayList<>();
+    private List<BlockNode> cachedData = new ArrayList<>();
+
     private List<Map<String, Object>> latestIncidents = new ArrayList<>();
     private String reportDate = "Initializing...";
     private volatile String syncProgress = "Idle";
@@ -47,7 +50,7 @@ public class ExcelProcessorService {
     // --- Getters and Status ---
 
     public List<BlockNode> getCurrentData() {
-        return currentData;
+        return cachedData;
     }
 
     public List<Map<String, Object>> getLatestIncidents() {
@@ -72,9 +75,6 @@ public class ExcelProcessorService {
 
     // --- Core Processing Logic ---
 
-    /**
-     * Loads the base network structure from the latest available Excel file.
-     */
     public void processLatestFiles() {
         File latestOlt = getLatestOltFile();
         if (latestOlt == null) {
@@ -83,17 +83,22 @@ public class ExcelProcessorService {
         }
 
         try {
-            this.currentData = parseOltFile(latestOlt, new HashMap<>(), new HashMap<>(), new HashMap<>());
-            this.reportDate = LocalDate.now().format(DATE_FORMATTER) + " (Report File)";
+            // If we have live incidents already, re-apply them to the new file data
+            if (latestIncidents != null && !latestIncidents.isEmpty()) {
+                processIncidentsAndRefresh(latestIncidents);
+            } else {
+                parseAndPersistOltFile(latestOlt, new HashMap<>(), new HashMap<>(), new HashMap<>());
+            }
+            // Ensure the report date reflects the file source if no live sync happened yet
+            if (reportDate == null || !reportDate.contains("(Live)")) {
+                this.reportDate = LocalDate.now().format(DATE_FORMATTER) + " (Report File)";
+            }
         } catch (Exception e) {
             reportDate = "Error loading base data";
             log.error("Failed to process latest files", e);
         }
     }
 
-    /**
-     * Fetches live incident data from the external API and updates the dashboard.
-     */
     public void processLiveApi() {
         if (isSyncRunning) return;
         
@@ -108,26 +113,23 @@ public class ExcelProcessorService {
             HttpEntity<String> entity = new HttpEntity<>(headers);
 
             List<Map<String, Object>> allIncidents = new ArrayList<>();
-            int page = 0, size = 100, maxPages = 50;
+            int page = 0, size = 100, maxPages = 20; // Reduced from 50 to 20 for faster response
 
             while (page < maxPages && !stopSync) {
                 syncProgress = String.format("Syncing... (%d items fetched)", allIncidents.size());
-
                 String url = String.format("https://sitpolycab.fiberify.com/api/tr-cases/searchvalue/olt alerts?page=%d&size=%d&sort=update_date,desc&cacheBuster=%d",
                         page, size, System.currentTimeMillis());
                 
                 log.info("Sync: Calling API Page {}: {}", page, url);
-
                 ResponseEntity<Object> response = restTemplate.exchange(url, HttpMethod.GET, entity, Object.class);
+                
                 if (response.getStatusCode().is2xxSuccessful()) {
                     List<Map<String, Object>> pageItems = extractContent(response.getBody());
                     if (pageItems == null || pageItems.isEmpty()) break;
-
                     allIncidents.addAll(pageItems);
                     if (pageItems.size() < size) break;
                     page++;
                 } else {
-                    log.error("Sync: API Error on page {}: {}", page, response.getStatusCode());
                     break;
                 }
             }
@@ -155,11 +157,8 @@ public class ExcelProcessorService {
         return new ArrayList<>();
     }
 
-    /**
-     * Parses incident list and refreshes the current network data status.
-     */
     private void processIncidentsAndRefresh(List<Map<String, Object>> incidents) throws Exception {
-        Map<String, String> idToStatus = new HashMap<>(); // ID -> "DOWN" or "RESOLVED"
+        Map<String, String> idToStatus = new HashMap<>(); 
         Map<String, String> idToAlarm = new HashMap<>();
         Map<String, String> idToTime = new HashMap<>();
 
@@ -173,12 +172,8 @@ public class ExcelProcessorService {
             boolean isActive = !status.contains("RESOLVE") && !status.contains("CLOSE");
             boolean isResolved = status.contains("RESOLVE") || status.contains("CLOSE");
             
-            boolean hasDownKeyword = isFailureKeywordPresent(title);
-            boolean isAssigning = status.contains("ASSIGN") || status.contains("NEW") || status.contains("OPEN") || status.contains("TOBEASSIGNED");
+            boolean downDetected = isActive && (isFailureKeywordPresent(title) || status.contains("NEW") || status.contains("ASSIGN"));
 
-            boolean downDetected = isActive && (hasDownKeyword || isAssigning);
-
-            // Check attributes for more identifiers
             if (isActive) {
                 downDetected |= checkAttributesForFailures(item, idToStatus, idToAlarm, idToTime, alarm, time);
             }
@@ -194,11 +189,9 @@ public class ExcelProcessorService {
             }
         }
 
-        log.info("Sync: Processed {} incidents. Mapped {} unique assets.", incidents.size(), idToStatus.size());
-
         File latestOlt = getLatestOltFile();
         if (latestOlt != null) {
-            this.currentData = parseOltFile(latestOlt, idToStatus, idToAlarm, idToTime);
+            parseAndPersistOltFile(latestOlt, idToStatus, idToAlarm, idToTime);
         }
     }
 
@@ -216,18 +209,11 @@ public class ExcelProcessorService {
         if (attrsObj instanceof List) {
             List<Map<String, Object>> attrs = (List<Map<String, Object>>) attrsObj;
             for (Map<String, Object> attr : attrs) {
-                String attrName = String.valueOf(attr.get("name")).toUpperCase();
                 String val = String.valueOf(attr.get("attributeValue")).toUpperCase();
-
                 if (val != null && !val.equals("NULL") && !val.trim().isEmpty()) {
                     if (isFailureKeywordPresent(val)) detected = true;
-
                     if (val.length() > 3 && !isKeyword(val)) {
-                        if (attrName.contains("BLOCK") || attrName.contains("OLT") || attrName.contains("GP") 
-                                || attrName.contains("NODE") || attrName.contains("IP")) {
-                            detected = true;
-                            recordStatus(idToStatus, idToAlarm, idToTime, "DOWN", val, alarm, time);
-                        }
+                        recordStatus(idToStatus, idToAlarm, idToTime, "DOWN", val, alarm, time);
                     }
                 }
             }
@@ -274,11 +260,16 @@ public class ExcelProcessorService {
         return files[0];
     }
 
-    private List<BlockNode> parseOltFile(File file, Map<String, String> idToStatus,
+    private void parseAndPersistOltFile(File file, Map<String, String> idToStatus,
                                        Map<String, String> idToAlarm, Map<String, String> idToTime) throws Exception {
-        List<BlockNode> nodes = new ArrayList<>();
-        Map<String, BlockNode> ipToNode = new LinkedHashMap<>();
         
+        // Map existing nodes by IP for lookup
+        Map<String, BlockNode> existingNodes = new HashMap<>();
+        for (BlockNode n : cachedData) existingNodes.put(n.getIp(), n);
+
+        // Map to keep track of nodes in order
+        Map<String, BlockNode> orderedNodeMap = new LinkedHashMap<>();
+
         try (FileInputStream fis = new FileInputStream(file); Workbook wb = new XSSFWorkbook(fis)) {
             Sheet sheet = wb.getSheetAt(0);
             Row hdr = sheet.getRow(0);
@@ -310,25 +301,33 @@ public class ExcelProcessorService {
                 }
 
                 if (!curIP.isEmpty()) {
-                    BlockNode node = ipToNode.get(curIP);
+                    // Check if we already have this node in our ordered map
+                    BlockNode node = orderedNodeMap.get(curIP);
                     if (node == null) {
-                        node = createBlockNode(curIP, curName, curDist, curCode, curGpBlock, idToStatus, idToAlarm);
-                        ipToNode.put(curIP, node);
-                        nodes.add(node);
+                        // If not, try to get from existing nodes or create new
+                        node = existingNodes.get(curIP);
+                        if (node == null) {
+                            node = new BlockNode();
+                            node.setIp(curIP);
+                        }
+                        orderedNodeMap.put(curIP, node);
                     }
-
+                    
+                    updateNodeFromExcel(node, curIP, curName, curDist, curCode, curGpBlock, idToStatus, idToAlarm);
+                    
                     if (!gpLoc.isEmpty()) {
-                        node.addGp(createGpEntry(gpLoc, gpCode, node, idToStatus));
+                        addOrUpdateGp(node, gpLoc, gpCode, idToStatus);
                     }
                 }
             }
+            // Update cachedData with the ordered values
+            this.cachedData = new ArrayList<>(orderedNodeMap.values());
+            log.info("Excel Processing: Processed {} block nodes (ordered).", cachedData.size());
         }
-        return nodes;
     }
 
-    private BlockNode createBlockNode(String ip, String name, String dist, String code, String gpBlock, 
+    private void updateNodeFromExcel(BlockNode node, String ip, String name, String dist, String code, String gpBlock, 
                                     Map<String, String> idToStatus, Map<String, String> idToAlarm) {
-        BlockNode node = new BlockNode();
         node.setIp(ip);
         node.setName(name);
         node.setDistrict(dist);
@@ -343,22 +342,32 @@ public class ExcelProcessorService {
             node.setStatus("RESOLVED");
         } else {
             node.setStatus("UP");
+            node.setAlarm("--");
         }
-        return node;
     }
 
-    private GpEntry createGpEntry(String loc, String code, BlockNode parent, Map<String, String> idToStatus) {
-        GpEntry gp = new GpEntry(loc, code);
-        String status = getLatestStatus(loc, code, "", idToStatus);
+    private void addOrUpdateGp(BlockNode node, String loc, String code, Map<String, String> idToStatus) {
+        GpEntry gp = node.getGps().stream()
+                .filter(g -> g.getLoc().equalsIgnoreCase(loc))
+                .findFirst().orElse(null);
         
-        if ("DOWN".equals(status) || "UNREACHABLE".equals(parent.getStatus())) {
+        if (gp == null) {
+            gp = new GpEntry(loc, code);
+            node.addGp(gp);
+        }
+        
+        String status = getLatestStatus(loc, code, "", idToStatus);
+        if ("DOWN".equals(status) || "UNREACHABLE".equals(node.getStatus())) {
             gp.setStatus("DOWN");
-        } else if ("RESOLVED".equals(status) || "RESOLVED".equals(parent.getStatus())) {
+        } else if ("RESOLVED".equals(status) || "RESOLVED".equals(parentStatus(node))) {
             gp.setStatus("RESOLVED");
         } else {
             gp.setStatus("UP");
         }
-        return gp;
+    }
+
+    private String parentStatus(BlockNode node) {
+        return node.getStatus();
     }
 
     private String getLatestStatus(String ip, String name, String code, Map<String, String> idToStatus) {
@@ -366,9 +375,7 @@ public class ExcelProcessorService {
         for (String k : keys) {
             if (k == null || k.isEmpty()) continue;
             String normK = k.toUpperCase().trim();
-            
             if (idToStatus.containsKey(normK)) return idToStatus.get(normK);
-            
             if (normK.length() > 5) {
                 for (Map.Entry<String, String> entry : idToStatus.entrySet()) {
                     if (entry.getKey().length() > 5 && isDiscreteMatch(normK, entry.getKey())) {
@@ -409,12 +416,10 @@ public class ExcelProcessorService {
 
     private int findCol(Row hdr, String... targets) {
         if (hdr == null) return -1;
-        // Exact match
         for (int c = 0; c < hdr.getLastCellNum(); c++) {
             String v = getCellValue(hdr.getCell(c)).toUpperCase().trim();
             for (String t : targets) if (v.equals(t.toUpperCase())) return c;
         }
-        // Contains match
         for (int c = 0; c < hdr.getLastCellNum(); c++) {
             String v = getCellValue(hdr.getCell(c)).toUpperCase().trim();
             for (String t : targets) if (v.contains(t.toUpperCase())) return c;
