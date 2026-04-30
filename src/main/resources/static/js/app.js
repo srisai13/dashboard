@@ -4,16 +4,12 @@ let currentSearch = '';
 let currentDist = '';
 let currentPage = 1;
 let ROWS_PER_PAGE = 10;
+let isFirstSyncComplete = false;
 
 function fetchData() {
-    const loadingEl = document.getElementById('loading');
-    if (loadingEl) loadingEl.style.display = 'block';
-    
     fetch('/api/nodes?t=' + Date.now())
         .then(res => res.json())
         .then(json => {
-            if (loadingEl) loadingEl.style.display = 'none';
-            
             // If server is still loading, show status and poll faster
             if (json.loading) {
                 showLoadingState('Server is processing data...');
@@ -34,12 +30,10 @@ function fetchData() {
             }
             
             populateDistricts();
-            currentPage = 1;
             render();
         })
         .catch(err => {
             console.error("Fetch failed:", err);
-            if (loadingEl) loadingEl.style.display = 'none';
             setTimeout(fetchData, 1500);
         });
 }
@@ -97,6 +91,9 @@ function render() {
     const tbody = document.getElementById('tbody');
     if (!tbody) return;
 
+    // ALWAYS update stats and pagination info
+    updateStats();
+    
     const filtered = getFilteredData();
     const totalPages = Math.max(1, Math.ceil(filtered.length / ROWS_PER_PAGE));
     
@@ -108,12 +105,16 @@ function render() {
     const endIdx = Math.min(startIdx + ROWS_PER_PAGE, filtered.length);
     const pageData = filtered.slice(startIdx, endIdx);
 
-    // Calculate stats from full dataset
-    let totalU = 0, totalR = 0;
-    DATA.forEach(d => { if(d.status === 'UNREACHABLE') totalU++; else totalR++; });
+    const dataString = JSON.stringify(pageData);
+    const totalCount = filtered.length;
 
     // Build table rows with DocumentFragment
     const fragment = document.createDocumentFragment();
+    
+    // Track current state on the DOM for reference (optional but kept for potential debugging)
+    tbody.setAttribute('data-last', dataString);
+    tbody.setAttribute('data-page', String(currentPage));
+    tbody.setAttribute('data-total', String(totalCount));
     
     for (let i = 0; i < pageData.length; i++) {
         const d = pageData[i];
@@ -150,13 +151,20 @@ function render() {
         tbody.appendChild(fragment);
     }
 
-    // Update stats
-    document.getElementById('totalNum').textContent = DATA.length;
-    document.getElementById('upNum').textContent = totalR;
-    document.getElementById('downNum').textContent = totalU;
+    // Render pagination at the end (Smart Update)
+    const paginationEl = document.getElementById('pagination');
+    if (paginationEl) {
+        const lastTotal = parseInt(paginationEl.getAttribute('data-last-total'));
+        const lastPage = parseInt(paginationEl.getAttribute('data-last-page'));
+        const lastTotalPages = parseInt(paginationEl.getAttribute('data-last-tpages'));
 
-    // Render pagination
-    renderPagination(filtered.length, totalPages);
+        if (filtered.length !== lastTotal || currentPage !== lastPage || totalPages !== lastTotalPages) {
+            renderPagination(filtered.length, totalPages);
+            paginationEl.setAttribute('data-last-total', filtered.length);
+            paginationEl.setAttribute('data-last-page', currentPage);
+            paginationEl.setAttribute('data-last-tpages', totalPages);
+        }
+    }
 }
 
 function renderPagination(totalItems, totalPages) {
@@ -243,28 +251,48 @@ function goToInputPage() {
 }
 
 function getPageRange(current, total) {
-    if (total <= 5) {
-        return Array.from({length: total}, (_, i) => i + 1);
+    if (total <= 7) {
+        return Array.from({ length: total }, (_, i) => i + 1);
     }
 
     const pages = [];
-    let start = Math.max(1, current - 2);
-    let end = Math.min(total, start + 4);
-    if (end - start < 4) {
-        start = Math.max(1, end - 4);
+    pages.push(1);
+
+    if (current > 4) {
+        pages.push('...');
     }
+
+    let start = Math.max(2, current - 1);
+    let end = Math.min(total - 1, current + 1);
+
+    if (current <= 4) {
+        end = 5;
+    } else if (current >= total - 3) {
+        start = total - 4;
+    }
+
     for (let i = start; i <= end; i++) {
         pages.push(i);
     }
+
+    if (current < total - 3) {
+        pages.push('...');
+    }
+
+    pages.push(total);
     return pages;
 }
 
 function goToPage(page) {
+    const p = parseInt(page);
+    if (isNaN(p)) return;
+
     const filtered = getFilteredData();
     const totalPages = Math.max(1, Math.ceil(filtered.length / ROWS_PER_PAGE));
     
-    if (page < 1 || page > totalPages) return;
-    currentPage = page;
+    if (p < 1 || p > totalPages) return;
+    
+    currentPage = p;
     render();
 
     // Scroll to top of table
@@ -311,7 +339,14 @@ function closePreview() {
     document.getElementById('previewModal').style.display = 'none';
 }
 
-async function syncLiveApi(isManual = true) {
+function setSpinner(active) {
+    const spinner = document.getElementById('btnSpinner');
+    if (spinner) spinner.classList.toggle('active', active);
+}
+
+let isFirstSync = true;
+
+async function syncLiveApi(isManual = true, showPopup = true) {
     // Blink the refresh button light green
     const btn = document.getElementById('refreshBtn');
     if (btn && isManual) {
@@ -319,33 +354,43 @@ async function syncLiveApi(isManual = true) {
         btn.style.backgroundColor = '#7dff7d';
         setTimeout(() => { btn.style.backgroundColor = '#28a745'; }, 300);
     }
-    
+
+    // Show spinner only for manual refresh
+    if (isManual) setSpinner(true);
+
     try {
         const res = await fetch('/api/sync-live', { method: 'POST' });
-        
+
         if (res.status === 400 && isManual) {
             const json = await res.json();
             console.log("Sync info:", json.message || "Sync already running");
         }
-        pollSync(isManual);
+        pollSync(isManual, showPopup);
     } catch (e) {
         console.error("Sync failed:", e);
+        if (isManual) setSpinner(false);
     }
 }
 
-async function pollSync(isManual = true) {
+async function pollSync(isManual = true, showPopup = true) {
     try {
         const res = await fetch('/api/sync-status?t=' + Date.now());
         const data = await res.json();
-        
+
         if (data.status === "Completed" || data.status === "Stopped" || data.status === "Idle") {
+            isFirstSyncComplete = true; // Mark that we have real live data now
+            if (isManual) setSpinner(false);
             fetchData();
-            if (isManual) showToast("Data refreshed successfully!");
+            if (showPopup) showToast("Data refreshed successfully!");
         } else {
-            setTimeout(() => pollSync(isManual), 2000);
+            // Pick up progressive updates during the "Live Run" (on startup)
+            // For background syncs, this will just return the same data until the end
+            fetchData();
+            setTimeout(() => pollSync(isManual, showPopup), 2000);
         }
     } catch (e) {
         console.error("Poll failed:", e);
+        if (isManual) setSpinner(false);
         setTimeout(() => pollSync(isManual), 5000);
     }
 }
@@ -367,16 +412,77 @@ function showToast(msg) {
     }, 3000);
 }
 
+function updateStats() {
+    // If DATA is empty, try to load from cache for instant display
+    if (DATA.length === 0) {
+        const cached = localStorage.getItem('lastStats');
+        if (cached) {
+            const { total, up, down } = JSON.parse(cached);
+            setStatDOM(total, up, down);
+        }
+        return;
+    }
+
+    let totalU = 0, totalR = 0;
+    DATA.forEach(d => { if (d.status === 'UNREACHABLE') totalU++; else totalR++; });
+    
+    let total = DATA.length;
+    let up = totalR;
+    let down = totalU;
+
+    // PROTECTION: If this is the first load and we only have Excel data (0 Down),
+    // but our cache says we had Downs last time, keep the cache numbers on screen
+    // until the first live sync finishes.
+    if (!isFirstSyncComplete && down === 0) {
+        const cached = localStorage.getItem('lastStats');
+        if (cached) {
+            const parsed = JSON.parse(cached);
+            if (parsed.down > 0) {
+                total = parsed.total;
+                up = parsed.up;
+                down = parsed.down;
+            }
+        }
+    }
+
+    // Only update and save if something changed
+    const current = localStorage.getItem('lastStats');
+    const newState = JSON.stringify({ total, up, down });
+    
+    if (current !== newState) {
+        setStatDOM(total, up, down);
+        localStorage.setItem('lastStats', newState);
+    }
+}
+
+function setStatDOM(total, up, down) {
+    const totalEl = document.getElementById('totalNum');
+    const upEl = document.getElementById('upNum');
+    const downEl = document.getElementById('downNum');
+    
+    if (totalEl && totalEl.textContent !== String(total)) totalEl.textContent = total;
+    if (upEl && upEl.textContent !== String(up)) upEl.textContent = up;
+    if (downEl && downEl.textContent !== String(down)) downEl.textContent = down;
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+    // Show last known stats immediately
+    updateStats();
+
     showLoadingState('Loading dashboard data...');
     fetchData();
-    
-    // Auto-refresh every 2 minutes
+
+    // Start polling for live sync updates immediately (backend auto-syncs on startup)
+    // First fetch: show popup
+    syncLiveApi(false, true);
+
+    // Auto-refresh every 30 seconds (full backend sync)
+    // Silent: no popup
     setInterval(() => {
         const now = new Date().toLocaleTimeString();
         console.log("[" + now + "] Auto-refreshing data...");
-        syncLiveApi(false);
-    }, 120000);
+        syncLiveApi(false, false);
+    }, 30000);
 
     const distFilter = document.getElementById('distFilter');
     if (distFilter) distFilter.onchange = (e) => { currentDist = e.target.value; currentPage = 1; render(); };

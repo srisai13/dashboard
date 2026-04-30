@@ -104,9 +104,32 @@ h1 {
     border-color: #333;
 }
 
-#refreshBtn {
-    /* Kept green as requested before */
+/* Refresh button + spinner wrapper */
+.refresh-wrap {
     margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+#refreshBtn {
+    /* Green refresh button */
+}
+
+/* Inline spinner shown beside the Refresh button during sync */
+.btn-spinner {
+    display: none;
+    width: 18px;
+    height: 18px;
+    border: 3px solid #d4edda;
+    border-top: 3px solid #28a745;
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+}
+
+.btn-spinner.active {
+    display: block;
 }
 
 /* --- Sync Pop-up Notification --- */

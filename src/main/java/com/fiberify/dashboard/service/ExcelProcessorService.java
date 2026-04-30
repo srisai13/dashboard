@@ -1,5 +1,7 @@
 package com.fiberify.dashboard.service;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fiberify.dashboard.model.BlockNode;
 import com.fiberify.dashboard.model.GpEntry;
 import jakarta.annotation.PostConstruct;
@@ -15,6 +17,7 @@ import org.springframework.web.client.RestTemplate;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -39,19 +42,26 @@ public class ExcelProcessorService {
 
     private List<Map<String, Object>> latestIncidents = new ArrayList<>();
     private String reportDate = "Loading...";
-    private volatile String syncProgress = "Idle";
+    private volatile String syncProgress = "Waiting for sync...";
     private volatile boolean stopSync = false;
     private volatile boolean isSyncRunning = false;
     private volatile boolean initialLoadComplete = false;
+    private boolean isFirstSyncOfSession = true;
 
     @PostConstruct
     public void init() {
+        // Load last known incidents from file immediately to show live numbers on start
+        loadIncidents();
+        
         Thread loader = new Thread(() -> {
             log.info("Background init: loading base Excel data...");
             long start = System.currentTimeMillis();
             processLatestFiles();
             initialLoadComplete = true;
-            log.info("Background init complete in {}ms", System.currentTimeMillis() - start);
+            log.info("Background init: Excel loaded in {}ms. Starting live API sync...", System.currentTimeMillis() - start);
+            // Auto-fetch live data on startup so dashboard always shows current state
+            processLiveApi();
+            log.info("Background init: live sync complete.");
         }, "data-loader");
         loader.setDaemon(true);
         loader.start();
@@ -130,7 +140,7 @@ public class ExcelProcessorService {
             HttpEntity<String> entity = new HttpEntity<>(headers);
 
             List<Map<String, Object>> allIncidents = new ArrayList<>();
-            int page = 0, size = 100, maxPages = 20; // Reduced from 50 to 20 for faster response
+            int page = 0, size = 100, maxPages = 20;
 
             while (page < maxPages && !stopSync) {
                 syncProgress = String.format("Syncing... (%d items fetched)", allIncidents.size());
@@ -144,6 +154,17 @@ public class ExcelProcessorService {
                     List<Map<String, Object>> pageItems = extractContent(response.getBody());
                     if (pageItems == null || pageItems.isEmpty()) break;
                     allIncidents.addAll(pageItems);
+                    
+                    // "Live Run": Only update progressively during the very first sync of the session
+                    if (isFirstSyncOfSession) {
+                        this.latestIncidents = allIncidents;
+                        try {
+                            processIncidentsAndRefresh(allIncidents);
+                        } catch (Exception ex) {
+                            log.warn("Progressive update failed: {}", ex.getMessage());
+                        }
+                    }
+                    
                     if (pageItems.size() < size) break;
                     page++;
                 } else {
@@ -151,8 +172,11 @@ public class ExcelProcessorService {
                 }
             }
             
+            // Final bulk update with all collected incidents at the end
             this.latestIncidents = allIncidents;
+            saveIncidents();
             processIncidentsAndRefresh(allIncidents);
+            isFirstSyncOfSession = false; // Subsequent syncs will be bulk-only to prevent "flexing"
             
             syncProgress = stopSync ? "Stopped" : "Completed";
             reportDate = LocalDate.now().format(DATE_FORMATTER);
@@ -173,6 +197,8 @@ public class ExcelProcessorService {
         }
         return new ArrayList<>();
     }
+
+
 
     private void processIncidentsAndRefresh(List<Map<String, Object>> incidents) throws Exception {
         Map<String, String> idToStatus = new HashMap<>(); 
@@ -457,5 +483,27 @@ public class ExcelProcessorService {
             return d == (long) d ? String.valueOf((long) d) : String.valueOf(d);
         }
         return cell.toString().trim();
+    }
+
+    private void saveIncidents() {
+        try {
+            File file = new File(DASHBOARD_FILES_DIR, "last_incidents.json");
+            new ObjectMapper().writeValue(file, latestIncidents);
+            log.info("Saved {} incidents to cache", latestIncidents.size());
+        } catch (IOException e) {
+            log.warn("Failed to save incidents cache: {}", e.getMessage());
+        }
+    }
+
+    private void loadIncidents() {
+        try {
+            File file = new File(DASHBOARD_FILES_DIR, "last_incidents.json");
+            if (file.exists()) {
+                latestIncidents = new ObjectMapper().readValue(file, new TypeReference<List<Map<String, Object>>>() {});
+                log.info("Loaded {} incidents from cache", latestIncidents.size());
+            }
+        } catch (IOException e) {
+            log.warn("Failed to load incidents cache: {}", e.getMessage());
+        }
     }
 }
