@@ -14,3 +14,7 @@ apache-maven-*/
 *.bat
 *.log
 .DS_Store
+
+# Dashboard Data & Cache
+dashboard_files/*.json
+dashboard_files/*.xlsx

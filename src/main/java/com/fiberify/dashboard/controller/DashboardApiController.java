@@ -20,6 +20,9 @@ public class DashboardApiController {
     @Autowired
     private ExcelProcessorService service;
 
+    @Autowired
+    private com.fiberify.dashboard.service.HealthIndicatorService healthService;
+
     @GetMapping("/nodes")
     public ResponseEntity<Map<String, Object>> getNodes() {
         Map<String, Object> response = new HashMap<>();
@@ -100,5 +103,33 @@ public class DashboardApiController {
         } catch (IOException e) {
             return ResponseEntity.status(500).body("Error uploading files: " + e.getMessage());
         }
+    }
+
+    @GetMapping("/health-indicators")
+    public ResponseEntity<Map<String, Object>> getHealthIndicators() {
+        Map<String, Object> response = new HashMap<>();
+        response.put("date", healthService.getLastFetchedAt());
+        response.put("data", healthService.getCachedData());
+        response.put("fetchRunning", healthService.isFetchRunning());
+        response.put("syncProgress", healthService.getSyncProgress());
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/sync-health")
+    public ResponseEntity<Map<String, String>> syncHealth() {
+        Map<String, String> response = new HashMap<>();
+        if (healthService.isFetchRunning()) {
+            response.put("message", "Sync already running");
+            return ResponseEntity.badRequest().body(response);
+        }
+        new Thread(() -> {
+            try {
+                healthService.fetchAndCache();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }).start();
+        response.put("message", "Sync started");
+        return ResponseEntity.ok(response);
     }
 }

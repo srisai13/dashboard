@@ -11,7 +11,16 @@
 <body>
 
 
-    <div class="container">
+    <div class="container" style="position: relative;">
+        <div style="position: absolute; top: 15px; right: 20px;">
+            <a href="health.html" style="text-decoration: none;">
+                <button style="background: #007bff; color:#fff; border:none; padding:9px 20px; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; letter-spacing:0.4px; box-shadow:0 2px 8px rgba(0,123,255,0.35); transition:all 0.2s ease;"
+                        onmouseover="this.style.transform='translateY(-1px)';this.style.boxShadow='0 4px 14px rgba(0,123,255,0.5)'"
+                        onmouseout="this.style.transform='';this.style.boxShadow='0 2px 8px rgba(0,123,255,0.35)'">
+                    Health indicator →
+                </button>
+            </a>
+        </div>
         <h1 style="text-align: center; margin-bottom: 5px;">Block Node Dashboard - OLT </h1>
         <div id="reportDate" style="text-align: center; color: #666; margin-bottom: 25px;">Report Date: Initializing...
         </div>
