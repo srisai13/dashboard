@@ -9,6 +9,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
 import java.io.IOException;
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -20,17 +21,18 @@ public class DashboardApiController {
     @Autowired
     private ExcelProcessorService service;
 
-    @Autowired
-    private com.fiberify.dashboard.service.HealthIndicatorService healthService;
-
     @GetMapping("/nodes")
     public ResponseEntity<Map<String, Object>> getNodes() {
+        List<BlockNode> nodes = service.getCurrentData();
+
         Map<String, Object> response = new HashMap<>();
-        response.put("date", service.getReportDate());
-        response.put("data", service.getCurrentData());
+
+        response.put("data", nodes);
+        response.put("dataVersion", service.getDataVersion());
         response.put("loading", !service.isInitialLoadComplete());
         return ResponseEntity.ok(response);
     }
+
 
     @GetMapping("/status")
     public ResponseEntity<Map<String, Object>> getStatus() {
@@ -38,6 +40,7 @@ public class DashboardApiController {
         response.put("ready", service.isInitialLoadComplete());
         response.put("syncRunning", service.isSyncRunning());
         response.put("syncProgress", service.getSyncProgress());
+        response.put("dataVersion", service.getDataVersion());
         return ResponseEntity.ok(response);
     }
 
@@ -50,17 +53,11 @@ public class DashboardApiController {
     public ResponseEntity<Map<String, String>> syncLiveApi() {
         Map<String, String> response = new HashMap<>();
         if (service.isSyncRunning()) {
-            response.put("message", "Sync already running");
+            response.put("message", "Sync already in progress");
             return ResponseEntity.badRequest().body(response);
         }
-        new Thread(() -> {
-            try {
-                service.processLiveApi();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }).start();
-        response.put("message", "Sync started");
+        service.restartSync();
+        response.put("message", "Sync restart initiated");
         return ResponseEntity.ok(response);
     }
 
@@ -68,7 +65,7 @@ public class DashboardApiController {
     public ResponseEntity<Map<String, String>> stopSync() {
         service.stopSync();
         Map<String, String> response = new HashMap<>();
-        response.put("message", "Stop command sent");
+        response.put("message", "Sync stop signaled");
         return ResponseEntity.ok(response);
     }
 
@@ -103,33 +100,5 @@ public class DashboardApiController {
         } catch (IOException e) {
             return ResponseEntity.status(500).body("Error uploading files: " + e.getMessage());
         }
-    }
-
-    @GetMapping("/health-indicators")
-    public ResponseEntity<Map<String, Object>> getHealthIndicators() {
-        Map<String, Object> response = new HashMap<>();
-        response.put("date", healthService.getLastFetchedAt());
-        response.put("data", healthService.getCachedData());
-        response.put("fetchRunning", healthService.isFetchRunning());
-        response.put("syncProgress", healthService.getSyncProgress());
-        return ResponseEntity.ok(response);
-    }
-
-    @PostMapping("/sync-health")
-    public ResponseEntity<Map<String, String>> syncHealth() {
-        Map<String, String> response = new HashMap<>();
-        if (healthService.isFetchRunning()) {
-            response.put("message", "Sync already running");
-            return ResponseEntity.badRequest().body(response);
-        }
-        new Thread(() -> {
-            try {
-                healthService.fetchAndCache();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }).start();
-        response.put("message", "Sync started");
-        return ResponseEntity.ok(response);
     }
 }

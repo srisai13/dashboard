@@ -9,15 +9,17 @@ public class BlockNode {
     private String ip;
     private String district;
     private String gpBlock;
-    private String status; // "UP" or "UNREACHABLE"
+    private String status;       // "UP" or "UNREACHABLE"
     private String alarm = "--";
     private String stateChange = "--";
+    private String createdDate = "--";
     private int gpCount;
 
     private List<GpEntry> gps = new ArrayList<>();
 
     public BlockNode() {}
 
+    // Getters and Setters
     public String getName() { return name; }
     public void setName(String name) { this.name = name; }
 
@@ -41,6 +43,9 @@ public class BlockNode {
 
     public String getStateChange() { return stateChange; }
     public void setStateChange(String stateChange) { this.stateChange = stateChange; }
+
+    public String getCreatedDate() { return createdDate; }
+    public void setCreatedDate(String createdDate) { this.createdDate = createdDate; }
 
     public int getGpCount() { return gpCount; }
     public void setGpCount(int gpCount) { this.gpCount = gpCount; }

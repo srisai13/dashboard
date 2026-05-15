@@ -2,33 +2,30 @@ let DATA = [];
 let currentFilter = 'all';
 let currentSearch = '';
 let currentDist = '';
+let startDate = '';
+let endDate = '';
+let currentStatus = 'ALL';
+let isSyncActive = false;
+
+
 let currentPage = 1;
 let ROWS_PER_PAGE = 10;
-let isFirstSyncComplete = false;
+let lastDataVersion = 0;
+let isPolling = false;
 
 function fetchData() {
     fetch('/api/nodes?t=' + Date.now())
         .then(res => res.json())
         .then(json => {
-            // If server is still loading, show status and poll faster
             if (json.loading) {
                 showLoadingState('Server is processing data...');
                 setTimeout(fetchData, 800);
                 return;
             }
-            
+
             DATA = json.data || [];
-            
-            const reportDateEl = document.getElementById('reportDate');
-            if (reportDateEl) {
-                reportDateEl.textContent = "Report Date: " + (json.date || "N/A");
-            }
-            
-            const lastSyncEl = document.getElementById('lastSyncTime');
-            if (lastSyncEl) {
-                lastSyncEl.textContent = "Last Sync: " + new Date().toLocaleTimeString();
-            }
-            
+            if (json.dataVersion) lastDataVersion = json.dataVersion;
+
             populateDistricts();
             render();
         })
@@ -37,6 +34,7 @@ function fetchData() {
             setTimeout(fetchData, 1500);
         });
 }
+
 
 function showLoadingState(message) {
     const tbody = document.getElementById('tbody');
@@ -48,19 +46,18 @@ function showLoadingState(message) {
             </div>
         </td></tr>`;
     }
-    // Hide pagination while loading
-    const paginationEl = document.getElementById('pagination');
-    if (paginationEl) paginationEl.style.display = 'none';
 }
 
 function populateDistricts() {
-    const dists = [...new Set(DATA.map(d => d.district))].sort();
+    const dists = [...new Set(DATA.map(d => d.district))].filter(Boolean).sort();
     const distSel = document.getElementById('distFilter');
     if (distSel) {
+        const savedDist = currentDist;
         distSel.innerHTML = '<option value="">All Districts</option>';
         dists.forEach(d => {
             const o = document.createElement('option');
             o.value = d; o.textContent = d;
+            if (d === savedDist) o.selected = true;
             distSel.appendChild(o);
         });
     }
@@ -68,16 +65,68 @@ function populateDistricts() {
 
 function filter(f, btn) {
     currentFilter = f;
+    if (f.toUpperCase() === 'ALL') {
+        currentDist = '';
+        startDate = '';
+        endDate = '';
+        const distFilter = document.getElementById('distFilter');
+        if (distFilter) distFilter.value = '';
+        const startInput = document.getElementById('startDateFilter');
+        const endInput = document.getElementById('endDateFilter');
+        if (startInput) startInput.value = '';
+        if (endInput) endInput.value = '';
+        updateDateDisplay();
+    }
     document.querySelectorAll('.btn-group .btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    currentPage = 1; // Reset to page 1 on filter change
+    currentPage = 1;
     render();
 }
 
 function getFilteredData() {
     return DATA.filter(d => {
-        if (currentFilter !== 'all' && d.status !== currentFilter) return false;
+        if (currentFilter !== 'all') {
+            if (currentFilter === 'UP' && d.status === 'UNREACHABLE') return false;
+            if (currentFilter === 'UNREACHABLE' && d.status !== 'UNREACHABLE') return false;
+        }
         if (currentDist && d.district !== currentDist) return false;
+        if (startDate || endDate) {
+            const nodeDateStr = (d.createdDate && d.createdDate !== '--') ? d.createdDate : d.stateChange;
+            if (!nodeDateStr || nodeDateStr === '--') return false;
+
+            // Robust date parsing (handles dd-mm-yyyy, yyyy-mm-dd, and slashes)
+            const parseDate = (str) => {
+                const datePart = str.split(' ')[0];
+                const p = datePart.split(/[-/]/);
+                if (p.length !== 3) return null;
+
+                let year, month, day;
+                if (p[0].length === 4) { // yyyy-mm-dd
+                    year = parseInt(p[0]); month = parseInt(p[1]) - 1; day = parseInt(p[2]);
+                } else { // dd-mm-yyyy
+                    year = parseInt(p[2]); month = parseInt(p[1]) - 1; day = parseInt(p[0]);
+                }
+                const dObj = new Date(year, month, day);
+                dObj.setHours(0, 0, 0, 0);
+                return dObj;
+            };
+
+            const nodeDateObj = parseDate(nodeDateStr);
+            if (!nodeDateObj) return false;
+
+            if (startDate) {
+                const s = startDate.split('-');
+                const startObj = new Date(parseInt(s[0]), parseInt(s[1]) - 1, parseInt(s[2]));
+                startObj.setHours(0, 0, 0, 0);
+                if (nodeDateObj < startObj) return false;
+            }
+            if (endDate) {
+                const e = endDate.split('-');
+                const endObj = new Date(parseInt(e[0]), parseInt(e[1]) - 1, parseInt(e[2]));
+                endObj.setHours(0, 0, 0, 0);
+                if (nodeDateObj > endObj) return false;
+            }
+        }
         if (currentSearch) {
             const s = currentSearch;
             const gpMatch = d.gps && d.gps.some(g => g.loc.toLowerCase().includes(s));
@@ -91,39 +140,23 @@ function render() {
     const tbody = document.getElementById('tbody');
     if (!tbody) return;
 
-    // ALWAYS update stats and pagination info
     updateStats();
-    
     const filtered = getFilteredData();
     const totalPages = Math.max(1, Math.ceil(filtered.length / ROWS_PER_PAGE));
-    
-    // Clamp current page
     if (currentPage > totalPages) currentPage = totalPages;
-    if (currentPage < 1) currentPage = 1;
 
-    const startIdx = (currentPage - 1) * ROWS_PER_PAGE;
-    const endIdx = Math.min(startIdx + ROWS_PER_PAGE, filtered.length);
-    const pageData = filtered.slice(startIdx, endIdx);
+    const start = (currentPage - 1) * ROWS_PER_PAGE;
+    const end = start + ROWS_PER_PAGE;
+    const paginated = filtered.slice(start, end);
 
-    const dataString = JSON.stringify(pageData);
-    const totalCount = filtered.length;
-
-    // Build table rows with DocumentFragment
     const fragment = document.createDocumentFragment();
-    
-    // Track current state on the DOM for reference (optional but kept for potential debugging)
-    tbody.setAttribute('data-last', dataString);
-    tbody.setAttribute('data-page', String(currentPage));
-    tbody.setAttribute('data-total', String(totalCount));
-    
-    for (let i = 0; i < pageData.length; i++) {
-        const d = pageData[i];
-        const globalIdx = startIdx + i; // Global row number
+
+    paginated.forEach((d, idx) => {
         const tr = document.createElement('tr');
         const isDown = d.status === 'UNREACHABLE';
-        
+
         tr.innerHTML = `
-            <td>${globalIdx + 1}</td>
+            <td>${start + idx + 1}</td>
             <td>${d.district || ''}</td>
             <td>${d.name || ''}</td>
             <td>${d.blockCode || ''}</td>
@@ -132,9 +165,7 @@ function render() {
             <td>${isDown ? '<span class="status-badge down">DOWN</span>' : '<span class="status-badge up">UP</span>'}</td>
             <td>${d.gpCount}</td>
             <td>
-                <button class="gp-view-btn" onclick="openGPsOnly('${d.ip}')">
-                    View Locations
-                </button>
+                <button class="gp-view-btn" onclick="openGPsOnly('${d.ip}')">View Locations</button>
             </td>
             <td style="text-align:center;">
                 <button class="preview-btn" onclick="openPreview('${d.ip}')" title="View Details">
@@ -142,7 +173,7 @@ function render() {
                 </button>
             </td>`;
         fragment.appendChild(tr);
-    }
+    });
 
     tbody.innerHTML = '';
     if (fragment.children.length === 0) {
@@ -151,151 +182,64 @@ function render() {
         tbody.appendChild(fragment);
     }
 
-    // Render pagination at the end (Smart Update)
-    const paginationEl = document.getElementById('pagination');
-    if (paginationEl) {
-        const lastTotal = parseInt(paginationEl.getAttribute('data-last-total'));
-        const lastPage = parseInt(paginationEl.getAttribute('data-last-page'));
-        const lastTotalPages = parseInt(paginationEl.getAttribute('data-last-tpages'));
-
-        if (filtered.length !== lastTotal || currentPage !== lastPage || totalPages !== lastTotalPages) {
-            renderPagination(filtered.length, totalPages);
-            paginationEl.setAttribute('data-last-total', filtered.length);
-            paginationEl.setAttribute('data-last-page', currentPage);
-            paginationEl.setAttribute('data-last-tpages', totalPages);
-        }
-    }
+    renderPagination(filtered.length, totalPages);
 }
 
 function renderPagination(totalItems, totalPages) {
-    const paginationEl = document.getElementById('pagination');
-    if (!paginationEl) return;
+    const el = document.getElementById('pagination');
+    if (!el) return;
 
-    if (totalItems === 0) {
-        paginationEl.style.display = 'none';
-        return;
-    }
-
-    paginationEl.style.display = 'flex';
+    if (totalItems === 0) { el.style.display = 'none'; return; }
+    el.style.display = 'flex';
 
     const startItem = (currentPage - 1) * ROWS_PER_PAGE + 1;
     const endItem = Math.min(currentPage * ROWS_PER_PAGE, totalItems);
 
-    let html = '';
-
-    // Left section: Page size + info
-    html += '<div class="page-left">';
-    html += '<span class="page-label">Page size</span>';
-    html += `<select class="page-size-select" onchange="changePageSize(this.value)">`;
-    [10, 20, 50, 100].forEach(size => {
-        html += `<option value="${size}" ${ROWS_PER_PAGE === size ? 'selected' : ''}>${size}</option>`;
-    });
-    html += '</select>';
-    html += `<span class="page-info">Showing ${startItem} - ${endItem} of ${totalItems} items.</span>`;
-    html += '</div>';
-
-    // Middle section: Go To
-    html += '<div class="page-goto">';
-    html += '<span class="page-label">Go To</span>';
-    html += `<input type="number" class="page-goto-input" id="gotoPageInput" value="${currentPage}" min="1" max="${totalPages}" 
-             onkeydown="if(event.key==='Enter')goToInputPage()">`;
-    html += `<button class="page-goto-btn" onclick="goToInputPage()">▶</button>`;
-    html += '</div>';
-
-    // Right section: Page buttons
-    html += '<div class="page-buttons">';
-
-    // « First page
-    html += `<button class="page-btn ${currentPage === 1 ? 'disabled' : ''}" 
-             onclick="goToPage(1)" ${currentPage === 1 ? 'disabled' : ''}>«</button>`;
-
-    // ‹ Previous page
-    html += `<button class="page-btn ${currentPage === 1 ? 'disabled' : ''}" 
-             onclick="goToPage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>‹</button>`;
-
-    // Page numbers
-    const pages = getPageRange(currentPage, totalPages);
-    for (const p of pages) {
-        if (p === '...') {
-            html += `<span class="page-ellipsis">…</span>`;
-        } else {
-            html += `<button class="page-btn ${p === currentPage ? 'active' : ''}" 
-                     onclick="goToPage(${p})">${p}</button>`;
-        }
-    }
-
-    // › Next page
-    html += `<button class="page-btn ${currentPage === totalPages ? 'disabled' : ''}" 
-             onclick="goToPage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}>›</button>`;
-
-    // » Last page
-    html += `<button class="page-btn ${currentPage === totalPages ? 'disabled' : ''}" 
-             onclick="goToPage(${totalPages})" ${currentPage === totalPages ? 'disabled' : ''}>»</button>`;
-
-    html += '</div>';
-
-    paginationEl.innerHTML = html;
-}
-
-function changePageSize(val) {
-    ROWS_PER_PAGE = parseInt(val);
-    currentPage = 1;
-    render();
-}
-
-function goToInputPage() {
-    const input = document.getElementById('gotoPageInput');
-    if (!input) return;
-    const page = parseInt(input.value);
-    if (!isNaN(page)) goToPage(page);
+    let html = `
+        <div class="page-left">
+            <span class="page-label">Page size</span>
+            <select class="page-size-select" onchange="changePageSize(this.value)">
+                ${[10, 20, 50, 100].map(s => `<option value="${s}" ${ROWS_PER_PAGE === s ? 'selected' : ''}>${s}</option>`).join('')}
+            </select>
+            <span class="page-info">Showing ${startItem} - ${endItem} of ${totalItems} items.</span>
+        </div>
+        <div class="page-goto">
+            <span class="page-label">Go To</span>
+            <input type="number" class="page-goto-input" id="gotoPageInput" value="${currentPage}" min="1" max="${totalPages}" onkeydown="if(event.key==='Enter')goToInputPage()">
+            <button class="page-goto-btn" onclick="goToInputPage()">▶</button>
+        </div>
+        <div class="page-buttons">
+            <button class="page-btn ${currentPage === 1 ? 'disabled' : ''}" onclick="goTo(1)" ${currentPage === 1 ? 'disabled' : ''}>«</button>
+            <button class="page-btn ${currentPage === 1 ? 'disabled' : ''}" onclick="goTo(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>‹</button>
+            ${getPageRange(currentPage, totalPages).map(p => p === '...' ? `<span class="page-ellipsis">…</span>` : `<button class="page-btn ${p === currentPage ? 'active' : ''}" onclick="goTo(${p})">${p}</button>`).join('')}
+            <button class="page-btn ${currentPage === totalPages ? 'disabled' : ''}" onclick="goTo(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}>›</button>
+            <button class="page-btn ${currentPage === totalPages ? 'disabled' : ''}" onclick="goTo(${totalPages})" ${currentPage === totalPages ? 'disabled' : ''}>»</button>
+        </div>
+    `;
+    el.innerHTML = html;
 }
 
 function getPageRange(current, total) {
-    if (total <= 7) {
-        return Array.from({ length: total }, (_, i) => i + 1);
-    }
-
-    const pages = [];
-    pages.push(1);
-
-    if (current > 4) {
-        pages.push('...');
-    }
-
+    if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+    const pages = [1];
+    if (current > 4) pages.push('...');
     let start = Math.max(2, current - 1);
     let end = Math.min(total - 1, current + 1);
-
-    if (current <= 4) {
-        end = 5;
-    } else if (current >= total - 3) {
-        start = total - 4;
-    }
-
-    for (let i = start; i <= end; i++) {
-        pages.push(i);
-    }
-
-    if (current < total - 3) {
-        pages.push('...');
-    }
-
+    if (current <= 4) end = 5;
+    else if (current >= total - 3) start = total - 4;
+    for (let i = start; i <= end; i++) pages.push(i);
+    if (current < total - 3) pages.push('...');
     pages.push(total);
     return pages;
 }
 
-function goToPage(page) {
-    const p = parseInt(page);
-    if (isNaN(p)) return;
-
-    const filtered = getFilteredData();
-    const totalPages = Math.max(1, Math.ceil(filtered.length / ROWS_PER_PAGE));
-    
-    if (p < 1 || p > totalPages) return;
-    
+function changePageSize(v) { ROWS_PER_PAGE = parseInt(v); currentPage = 1; render(); }
+function goToInputPage() { const v = parseInt(document.getElementById('gotoPageInput').value); if (!isNaN(v)) goTo(v); }
+function goTo(p) {
+    const total = Math.max(1, Math.ceil(getFilteredData().length / ROWS_PER_PAGE));
+    if (p < 1 || p > total) return;
     currentPage = p;
     render();
-
-    // Scroll to top of table
     const card = document.querySelector('.card');
     if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -304,13 +248,8 @@ function openGPsOnly(ip) {
     const node = DATA.find(d => d.ip === ip);
     if (!node) return;
     const gpTags = (node.gps || []).map(g => `<span class="gp-tag ${g.status === 'DOWN' ? 'down' : ''}">${g.loc}</span>`).join('');
-
     document.getElementById('previewTitle').textContent = "GP Locations: " + node.name;
-    document.getElementById('previewBody').innerHTML = `
-        <div class="gp-container" style="max-height:300px; border:1px solid #eee; padding:15px; border-radius:8px; background:#fdfdfd;">
-            ${gpTags || '<span style="color:#999;">No locations found.</span>'}
-        </div>
-    `;
+    document.getElementById('previewBody').innerHTML = `<div class="gp-container" style="max-height:300px; border:1px solid #eee; padding:15px; border-radius:8px; background:#fdfdfd;">${gpTags || '<span style="color:#999;">No locations found.</span>'}</div>`;
     document.getElementById('previewModal').style.display = 'flex';
 }
 
@@ -320,7 +259,6 @@ function openPreview(ip) {
     const isDown = node.status === 'UNREACHABLE';
     const statusColor = isDown ? '#f44336' : '#4caf50';
     const gpTags = (node.gps || []).map(g => `<span class="gp-tag ${g.status === 'DOWN' ? 'down' : ''}">${g.loc}</span>`).join('');
-
     document.getElementById('previewTitle').textContent = "Node: " + node.name;
     document.getElementById('previewBody').innerHTML = `
         <div class="attr-row"><span class="attr-key">District:</span><span class="attr-val">${node.district || '—'}</span></div>
@@ -328,6 +266,8 @@ function openPreview(ip) {
         <div class="attr-row"><span class="attr-key">Block Code:</span><span class="attr-val">${node.blockCode || '—'}</span></div>
         <div class="attr-row"><span class="attr-key">IP Address:</span><span class="attr-val">${node.ip || '—'}</span></div>
         <div class="attr-row"><span class="attr-key">Status:</span><span class="attr-val" style="color:${statusColor}; font-weight:bold;">${node.status}</span></div>
+        <div class="attr-row"><span class="attr-key">Incident Created At:</span><span class="attr-val">${node.createdDate || '—'}</span></div>
+        <div class="attr-row"><span class="attr-key">Last State Change:</span><span class="attr-val">${node.stateChange || '—'}</span></div>
         <div class="attr-row"><span class="attr-key">GP Count:</span><span class="attr-val">${node.gpCount}</span></div>
         <div style="margin-top:15px; font-weight:bold; color:#666; font-size:12px;">GP LOCATIONS:</div>
         <div class="gp-container" style="max-height:150px; margin-top:10px; border:1px solid #eee; padding:10px; border-radius:5px;">${gpTags || '—'}</div>
@@ -335,163 +275,246 @@ function openPreview(ip) {
     document.getElementById('previewModal').style.display = 'flex';
 }
 
-function closePreview() {
-    document.getElementById('previewModal').style.display = 'none';
-}
+function closePreview() { document.getElementById('previewModal').style.display = 'none'; }
 
-function setSpinner(active) {
-    const spinner = document.getElementById('btnSpinner');
-    if (spinner) spinner.classList.toggle('active', active);
-}
-
-let isFirstSync = true;
-
-async function syncLiveApi(isManual = true, showPopup = true) {
-    // Blink the refresh button light green
+async function syncLiveApi(isManual = true) {
     const btn = document.getElementById('refreshBtn');
-    if (btn && isManual) {
-        btn.style.transition = 'background-color 0.15s ease';
-        btn.style.backgroundColor = '#7dff7d';
-        setTimeout(() => { btn.style.backgroundColor = '#28a745'; }, 300);
+    const spinner = document.getElementById('syncSpinner');
+
+    // If manual click and sync is active, it acts as a 'Cancel' button
+    if (isManual && isSyncActive) {
+        try {
+            await fetch('/api/stop-sync', { method: 'POST' });
+            showToast("Stopping sync...");
+            return;
+        } catch (e) {
+            console.error("Stop failed", e);
+            return;
+        }
     }
 
-    // Show spinner only for manual refresh
-    if (isManual) setSpinner(true);
+    // For auto-refresh (isManual = false), don't trigger if already syncing
+    if (!isManual && isSyncActive) {
+        console.log("Auto-refresh skipped: Sync already in progress");
+        return;
+    }
+
+    if (btn && isManual) {
+        currentPage = 1;
+        if (spinner) spinner.style.display = 'inline-block';
+    }
 
     try {
         const res = await fetch('/api/sync-live', { method: 'POST' });
-
-        if (res.status === 400 && isManual) {
-            const json = await res.json();
-            console.log("Sync info:", json.message || "Sync already running");
+        if (res.status === 400) {
+            showToast("Sync already in progress...");
+        } else if (!res.ok) {
+            showToast("Failed to start sync");
         }
-        pollSync(isManual, showPopup);
+
+        if (!isPolling) {
+            pollSync('incident');
+        }
     } catch (e) {
-        console.error("Sync failed:", e);
-        if (isManual) setSpinner(false);
+        console.error("Sync trigger failed:", e);
+        if (isManual) showToast("Error connecting to server");
     }
 }
 
-async function pollSync(isManual = true, showPopup = true) {
+async function pollSync(type) {
+    isPolling = true;
     try {
-        const res = await fetch('/api/sync-status?t=' + Date.now());
+        const res = await fetch('/api/status?t=' + Date.now());
         const data = await res.json();
 
-        if (data.status === "Completed" || data.status === "Stopped" || data.status === "Idle") {
-            isFirstSyncComplete = true; // Mark that we have real live data now
-            if (isManual) setSpinner(false);
+        const progress = data.syncProgress || "";
+        const running = data.syncRunning;
+        isSyncActive = running;
+
+        const refreshBtn = document.getElementById('refreshBtn');
+        const spinner = document.getElementById('syncSpinner');
+        
+        if (refreshBtn) {
+            if (running) {
+                refreshBtn.textContent = 'Cancel';
+                refreshBtn.className = 'btn btn-cancel';
+                if (spinner) spinner.classList.add('red');
+            } else {
+                refreshBtn.textContent = 'Refresh';
+                refreshBtn.className = 'btn btn-refresh';
+                if (spinner) spinner.classList.remove('red');
+            }
+        }
+
+        // Update data if version changed
+        if (data.dataVersion !== lastDataVersion) {
+            lastDataVersion = data.dataVersion;
             fetchData();
-            if (showPopup) showToast("Data refreshed successfully!");
+        }
+
+        if (!running) {
+            // Sync stopped or finished
+            if (spinner) spinner.style.display = 'none';
+            
+            if (progress.includes("Completed") || progress.includes("Finished")) {
+                showToast("Refresh Done!");
+            } else if (progress.includes("Error")) {
+                showToast("Sync failed: " + progress);
+            } else if (progress.includes("Stopped")) {
+                showToast("Sync cancelled");
+            }
+            
+            isPolling = false;
+            // Stop polling since not running
+            return; 
         } else {
-            // Pick up progressive updates during the "Live Run" (on startup)
-            // For background syncs, this will just return the same data until the end
-            fetchData();
-            setTimeout(() => pollSync(isManual, showPopup), 2000);
+            // Still running, show spinner and poll again
+            if (spinner) spinner.style.display = 'inline-block';
+            setTimeout(() => pollSync(type), 2000);
         }
     } catch (e) {
         console.error("Poll failed:", e);
-        if (isManual) setSpinner(false);
-        setTimeout(() => pollSync(isManual), 5000);
+        // Retry with longer delay on network error
+        setTimeout(() => pollSync(type), 5000);
     }
 }
 
 function showToast(msg) {
-    let toast = document.getElementById('toast-popup');
-    if (!toast) {
-        toast = document.createElement('div');
-        toast.id = 'toast-popup';
-        toast.style.cssText = 'position:fixed;top:20px;right:20px;background:#28a745;color:#fff;padding:12px 24px;border-radius:8px;font-size:14px;font-weight:500;box-shadow:0 4px 12px rgba(0,0,0,0.2);z-index:99999;opacity:0;transform:translateX(100px);transition:all 0.3s ease;';
-        document.body.appendChild(toast);
-    }
-    toast.textContent = msg;
-    toast.style.opacity = '1';
-    toast.style.transform = 'translateX(0)';
-    setTimeout(() => {
-        toast.style.opacity = '0';
-        toast.style.transform = 'translateX(100px)';
-    }, 3000);
+    const t = document.getElementById('toast');
+    if (!t) return;
+    t.textContent = msg;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 3000);
 }
 
 function updateStats() {
-    // If DATA is empty, try to load from cache for instant display
-    if (DATA.length === 0) {
-        const cached = localStorage.getItem('lastStats');
-        if (cached) {
-            const { total, up, down } = JSON.parse(cached);
-            setStatDOM(total, up, down);
-        }
+    if (DATA.length === 0) return;
+    let totalU = 0, totalR = 0;
+    DATA.forEach(d => { if (d.status === 'UNREACHABLE') totalU++; else totalR++; });
+    document.getElementById('totalNum').textContent = DATA.length;
+    document.getElementById('upNum').textContent = totalR;
+    document.getElementById('downNum').textContent = totalU;
+}
+
+function updateDateDisplay() {
+    const clearBtn = document.getElementById('clearDateBtn');
+    const dateDisplay = document.getElementById('dateDisplay');
+
+    if (!startDate && !endDate) {
+        if (dateDisplay) dateDisplay.textContent = "All Dates";
+        if (clearBtn) clearBtn.style.display = 'none';
         return;
     }
 
-    let totalU = 0, totalR = 0;
-    DATA.forEach(d => { if (d.status === 'UNREACHABLE') totalU++; else totalR++; });
-    
-    let total = DATA.length;
-    let up = totalR;
-    let down = totalU;
+    if (clearBtn) clearBtn.style.display = 'block';
 
-    // PROTECTION: If this is the first load and we only have Excel data (0 Down),
-    // but our cache says we had Downs last time, keep the cache numbers on screen
-    // until the first live sync finishes.
-    if (!isFirstSyncComplete && down === 0) {
-        const cached = localStorage.getItem('lastStats');
-        if (cached) {
-            const parsed = JSON.parse(cached);
-            if (parsed.down > 0) {
-                total = parsed.total;
-                up = parsed.up;
-                down = parsed.down;
-            }
-        }
+    const formatDate = (val) => {
+        if (!val) return '';
+        const p = val.split('-');
+        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        return `${p[2]} ${months[parseInt(p[1]) - 1]}`;
+    };
+
+    if (startDate && endDate) {
+        dateDisplay.textContent = `${formatDate(startDate)} - ${formatDate(endDate)}`;
+    } else if (startDate) {
+        dateDisplay.textContent = `From ${formatDate(startDate)}`;
+    } else if (endDate) {
+        dateDisplay.textContent = `Until ${formatDate(endDate)}`;
     }
-
-    // Only update and save if something changed
-    const current = localStorage.getItem('lastStats');
-    const newState = JSON.stringify({ total, up, down });
-    
-    if (current !== newState) {
-        setStatDOM(total, up, down);
-        localStorage.setItem('lastStats', newState);
-    }
-}
-
-function setStatDOM(total, up, down) {
-    const totalEl = document.getElementById('totalNum');
-    const upEl = document.getElementById('upNum');
-    const downEl = document.getElementById('downNum');
-    
-    if (totalEl && totalEl.textContent !== String(total)) totalEl.textContent = total;
-    if (upEl && upEl.textContent !== String(up)) upEl.textContent = up;
-    if (downEl && downEl.textContent !== String(down)) downEl.textContent = down;
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Show last known stats immediately
-    updateStats();
-
-    showLoadingState('Loading dashboard data...');
     fetchData();
+    
+    // Check if sync is already running on server to resume polling
+    fetch('/api/status?t=' + Date.now())
+        .then(res => res.json())
+        .then(data => {
+            if (data.syncRunning) {
+                isSyncActive = true;
+                if (!isPolling) pollSync('incident');
+            }
+        }).catch(err => console.error("Initial status check failed:", err));
 
-    // Start polling for live sync updates immediately (backend auto-syncs on startup)
-    // First fetch: show popup
-    syncLiveApi(false, true);
-
-    // Auto-refresh every 30 seconds (full backend sync)
-    // Silent: no popup
-    setInterval(() => {
-        const now = new Date().toLocaleTimeString();
-        console.log("[" + now + "] Auto-refreshing data...");
-        syncLiveApi(false, false);
-    }, 30000);
+    // setInterval(() => syncLiveApi(false), 120000); // Removed auto-refresh timer
 
     const distFilter = document.getElementById('distFilter');
     if (distFilter) distFilter.onchange = (e) => { currentDist = e.target.value; currentPage = 1; render(); };
+    window.clearDateFilter = function (e) {
+        if (e) e.stopPropagation();
+        startDate = '';
+        endDate = '';
+        const startInput = document.getElementById('startDateFilter');
+        const endInput = document.getElementById('endDateFilter');
+        if (startInput) startInput.value = '';
+        if (endInput) endInput.value = '';
+        updateDateDisplay();
+        const dd = document.getElementById('dateRangeDropdown');
+        if (dd) dd.classList.remove('show');
+        currentPage = 1;
+        render();
+    };
+
+
+
     const searchInput = document.getElementById('search');
+
+    window.toggleDateDropdown = function (e) {
+        e.stopPropagation();
+        const dd = document.getElementById('dateRangeDropdown');
+        if (dd) dd.classList.toggle('show');
+    };
+
+    window.applyDateRange = function () {
+        startDate = document.getElementById('startDateFilter').value;
+        endDate = document.getElementById('endDateFilter').value;
+        updateDateDisplay();
+        document.getElementById('dateRangeDropdown').classList.remove('show');
+        currentPage = 1;
+        render();
+    };
+
+    window.setDatePreset = function (type) {
+        const today = new Date();
+        let start = new Date();
+        let end = new Date();
+
+        if (type === 'today') {
+            // No changes needed
+        } else if (type === 'yesterday') {
+            start.setDate(today.getDate() - 1);
+            end.setDate(today.getDate() - 1);
+        } else if (type === '7days') {
+            start.setDate(today.getDate() - 7);
+        } else if (type === '30days') {
+            start.setDate(today.getDate() - 30);
+        }
+
+        const toISO = (d) => d.toISOString().split('T')[0];
+        startDate = toISO(start);
+        endDate = toISO(end);
+
+        document.getElementById('startDateFilter').value = startDate;
+        document.getElementById('endDateFilter').value = endDate;
+
+        applyDateRange();
+    };
+
+    // Close dropdown on outside click
+    document.addEventListener('click', (e) => {
+        const dd = document.getElementById('dateRangeDropdown');
+        const btn = document.getElementById('datePickerBtn');
+        if (dd && dd.classList.contains('show') && !dd.contains(e.target) && !btn.contains(e.target)) {
+            dd.classList.remove('show');
+        }
+    });
+
     if (searchInput) {
-        let debounceTimer;
+        let timer;
         searchInput.oninput = (e) => {
-            clearTimeout(debounceTimer);
-            debounceTimer = setTimeout(() => {
+            clearTimeout(timer);
+            timer = setTimeout(() => {
                 currentSearch = e.target.value.toLowerCase();
                 currentPage = 1;
                 render();
@@ -499,3 +522,5 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 });
+
+
